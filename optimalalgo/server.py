@@ -6,7 +6,6 @@ import json
 import datetime
 import random
 from typing import Dict, List, Optional
-import uuid
 
 app = FastAPI()
 
@@ -20,16 +19,20 @@ app.add_middleware(
 )
 
 class ConveyerBelt:
+    """Represents the conveyer belt that picks up cars from buffer lanes."""
+    
     def __init__(self):
         self.reset()
         
     def reset(self):
+        """Reset conveyer belt to initial state."""
         self.current_color = None
         self.color_changes = 0
         self.picked_cars = []
         self.sequence_history = []
         
     def find_most_frequent_color(self, buffer_lanes):
+        """Find the most frequent color at the front of all lanes."""
         front_colors = {}
         for lane in buffer_lanes:
             for car in lane:
@@ -41,11 +44,14 @@ class ConveyerBelt:
         return max(front_colors.items(), key=lambda x: x[1])[0]
     
     def pick_car(self, buffer_lanes):
+        """Pick a car from the buffer lanes based on optimization rules."""
+        # If no current color, find most frequent color
         if self.current_color is None:
             self.current_color = self.find_most_frequent_color(buffer_lanes)
             if self.current_color is None:
-                return None, -1
+                return None, -1  # No cars available
         
+        # Try to find a lane with current color at front
         for lane_idx, lane in enumerate(buffer_lanes):
             if lane and lane[0] == self.current_color:
                 picked_car = lane[0]
@@ -58,10 +64,12 @@ class ConveyerBelt:
                 })
                 return picked_car, lane_idx
         
+        # If no matching color found, pick any non-empty lane and count color change
         for lane_idx, lane in enumerate(buffer_lanes):
             if lane and lane[0] != 0:
                 picked_car = lane[0]
-                if picked_car != self.current_color:
+                color_changed = picked_car != self.current_color
+                if color_changed:
                     self.color_changes += 1
                 self.current_color = picked_car
                 self.picked_cars.append(picked_car)
@@ -69,17 +77,17 @@ class ConveyerBelt:
                     'color': picked_car,
                     'lane': lane_idx,
                     'timestamp': datetime.datetime.now().isoformat(),
-                    'color_change': picked_car != self.current_color
+                    'color_change': color_changed
                 })
                 return picked_car, lane_idx
         
-        return None, -1
+        return None, -1  # No cars available
 
     def get_stats(self):
+        """Return statistics about the conveyer belt operations."""
         stats = {
             'total_picks': len(self.picked_cars),
             'color_changes': self.color_changes,
-            
             'current_color': self.current_color,
         }
         if self.picked_cars:
@@ -89,45 +97,68 @@ class ConveyerBelt:
             stats['color_distribution'] = color_counts
         return stats
 
+
 class BufferSystem:
-    def __init__(self):
+    """Represents the buffer lanes and the enqueueing logic for ovens 1 and 2."""
+
+    def __init__(self, buffer_lanes=None, color_distribution=None):
+        self.conveyer = ConveyerBelt()
         self.default_color_distribution = {
             'C1': 40, 'C2': 25, 'C3': 12, 'C4': 8, 'C5': 3,
             'C6': 2, 'C7': 2, 'C8': 2, 'C9': 2, 'C10': 2,
-            'C11': 2, 'C12': 1, 0: 0
+            'C11': 2, 'C12': 1, 0: 0,
         }
-        self.overflow=0
-    
-        self.reset()
+        self.overflow = 0
+        self.reset(buffer_lanes, color_distribution)
+
+    def reset(self, buffer_lanes=None, color_distribution=None):
+        """Reset the buffer system to initial state."""
+        # default lanes: lanes 0-3 have 14 slots, lanes 4-8 have 16 slots
+        if buffer_lanes is None:
+            buffer_lanes = [
+                [0] * 14, [0] * 14, [0] * 14, [0] * 14,
+                [0] * 16, [0] * 16, [0] * 16, [0] * 16, [0] * 16,
+            ]
         
-    def reset(self):
-        self.buffer_lanes = [
-            [0] * 14, [0] * 14, [0] * 14, [0] * 14,
-            [0] * 16, [0] * 16, [0] * 16, [0] * 16, [0] * 16
-        ]
-        self.color_distribution = self.default_color_distribution.copy()
-        self.conveyer = ConveyerBelt()
+        if color_distribution is None:
+            color_distribution = self.default_color_distribution.copy()
+            
+        self.buffer_lanes = buffer_lanes
         self.cars = 0
+        self.color_distribution = color_distribution
         self.penalty_counter = 0
         self.stats = {'total_cars': 0, 'by_color': {}, 'penalties': 0}
         self.operation_log = []
-        
+        self.conveyer.reset()
+        self.overflow = 0
+
     def generate_cars_by_distribution(self, total_cars):
+        """Generate a list of cars based on the percentage distribution."""
         colors = []
         for color, percentage in self.color_distribution.items():
-            if color != 0:
+            if color != 0:  # Skip the 0 key
+                # Calculate number of cars for this color based on percentage
                 num_cars = round((percentage / 100) * total_cars)
                 colors.extend([color] * num_cars)
+        
+        # Shuffle the colors to randomize their order
         random.shuffle(colors)
         return colors
-    
+
     def update_stats(self, color):
+        """Update statistics for the added car."""
         self.stats['total_cars'] += 1
         self.stats['by_color'][color] = self.stats['by_color'].get(color, 0) + 1
         self.stats['penalties'] = self.penalty_counter
-        
+
+    def log_event(self, message):
+        """Log events to operation log."""
+        self.operation_log.append(f"{datetime.datetime.now()}: {message}")
+
     def add_to_bufferline(self, color, oven):
+        """Enqueue a car with color into the buffer lanes for oven (1 or 2)."""
         if oven == 1:
+            # 1. Base case: No cars present
             if self.cars == 0:
                 self.buffer_lanes[0][0] = color
                 self.cars += 1
@@ -135,26 +166,21 @@ class BufferSystem:
                 self.operation_log.append(f"Added {color} to lane 0 (first car)")
                 return True
 
+            # 2. Find lane colors (front of each lane 0-3, or 0 if empty)
             lane_color = [next((c for c in lane if c != 0), 0) for lane in self.buffer_lanes[:4]]
 
+            # 3. Try to find a lane with matching color
             for i in range(4):
                 if lane_color[i] == color:
                     for j in range(len(self.buffer_lanes[i])):
                         if self.buffer_lanes[i][j] == 0:
                             self.buffer_lanes[i][j] = color
-                            # Record immediately to conveyor visualization
-                            self.conveyer.sequence_history.append({
-                                'color': color,
-                                'lane': i if oven == 1 else 4 + i,
-                                'timestamp': datetime.datetime.now().isoformat(),
-                                'color_change': False
-                            })
-
                             self.cars += 1
                             self.update_stats(color)
                             self.operation_log.append(f"Added {color} to lane {i} (color match)")
                             return True
 
+            # 4. No matching color: find lane with minimum priority color
             min_priority = float('inf')
             min_lane = 0
             for i in range(4):
@@ -164,31 +190,27 @@ class BufferSystem:
                     min_priority = priority
                     min_lane = i
 
+            # Try to enqueue to the first empty slot in the min_priority lane
             for j in range(len(self.buffer_lanes[min_lane])):
                 if self.buffer_lanes[min_lane][j] == 0:
                     self.buffer_lanes[min_lane][j] = color
-                    # Record immediately to conveyor visualization
-                    self.conveyer.sequence_history.append({
-                        'color': color,
-                        'lane': i if oven == 1 else 4 + i,
-                        'timestamp': datetime.datetime.now().isoformat(),
-                        'color_change': False,
-                        
-                    })
-
                     self.cars += 1
                     self.update_stats(color)
                     self.operation_log.append(f"Added {color} to lane {min_lane} (min priority)")
                     return True
 
+            # 5. All lanes 0-3 are full, call again for lanes 4-8 using oven=2
             self.penalty_counter += 1
+            self.overflow += 1
+            self.log_event(f"Penalty: Car with color {color} sent to lanes 4-8 using oven1")
             self.operation_log.append(f"Penalty: {color} overflow to oven 2")
-            self.overflow+=1
             return self.add_to_bufferline(color, 2)
 
         if oven == 2:
+            # Find lane colors (front of each lane 4-8, or 0 if empty)
             lane_color = [next((c for c in lane if c != 0), 0) for lane in self.buffer_lanes[4:9]]
 
+            # Try to find a lane with matching color
             for i in range(5):
                 if lane_color[i] == color:
                     for j in range(len(self.buffer_lanes[4 + i])):
@@ -199,6 +221,7 @@ class BufferSystem:
                             self.operation_log.append(f"Added {color} to lane {4+i} (oven 2 color match)")
                             return True
 
+            # No matching color: find lane with minimum priority color
             min_priority = float('inf')
             min_lane = 4
             for i in range(5):
@@ -208,6 +231,7 @@ class BufferSystem:
                     min_priority = priority
                     min_lane = 4 + i
 
+            # Try to enqueue to the first empty slot in the min_priority lane
             for j in range(len(self.buffer_lanes[min_lane])):
                 if self.buffer_lanes[min_lane][j] == 0:
                     self.buffer_lanes[min_lane][j] = color
@@ -216,19 +240,26 @@ class BufferSystem:
                     self.operation_log.append(f"Added {color} to lane {min_lane} (oven 2 min priority)")
                     return True
             
+            # All lanes 4-8 are full, log error
+            self.log_event(f"Error: All lanes 4-8 are full for car with color {color}")
             self.operation_log.append(f"Error: All lanes full for {color}")
             return False
 
     def remove_car_from_lane(self, lane_idx):
+        """Remove car from front of lane and shift remaining cars forward."""
         if not self.buffer_lanes[lane_idx]:
             return None
         
+        # Get the car from the front
         car = self.buffer_lanes[lane_idx][0]
+        
+        # Shift all cars forward
         self.buffer_lanes[lane_idx] = self.buffer_lanes[lane_idx][1:] + [0]
         self.cars -= 1
         return car
 
     def process_conveyer_pickup(self):
+        """Process one pickup by the conveyer belt."""
         car, lane_idx = self.conveyer.pick_car(self.buffer_lanes)
         if car is not None and lane_idx >= 0:
             self.remove_car_from_lane(lane_idx)
@@ -236,14 +267,27 @@ class BufferSystem:
             return True
         return False
 
+    def get_lane_status(self, lane):
+        """Get status of a lane based on utilization."""
+        filled = sum(1 for car in lane if car != 0)
+        capacity = len(lane)
+        utilization = filled / capacity
+        
+        if utilization >= 0.9:
+            return 'critical'
+        elif utilization >= 0.7:
+            return 'warning'
+        else:
+            return 'active'
+
     def get_system_state(self):
+        """Get current system state for frontend display."""
         oven1_cars = sum(1 for lane in self.buffer_lanes[:4] for car in lane if car != 0)
         oven2_cars = sum(1 for lane in self.buffer_lanes[4:] for car in lane if car != 0)
         oven1_capacity = sum(len(lane) for lane in self.buffer_lanes[:4])
         oven2_capacity = sum(len(lane) for lane in self.buffer_lanes[4:])
         
         conveyer_stats = self.conveyer.get_stats()
-        buffer_stats=self.overflow
         
         return {
             'buffer_lanes': {
@@ -270,8 +314,7 @@ class BufferSystem:
                 'current_color': conveyer_stats['current_color'],
                 'total_picks': conveyer_stats['total_picks'],
                 'color_changes': conveyer_stats['color_changes'],
-                'recent_sequence': [item['color'] for item in self.conveyer.sequence_history[-20:]],  # Last 20 picks
-                
+                'recent_sequence': [item['color'] for item in self.conveyer.sequence_history[-20:]],
             },
             'kpis': {
                 'throughput': conveyer_stats['total_picks'],
@@ -279,7 +322,8 @@ class BufferSystem:
                 'colorChangeovers': conveyer_stats['color_changes'],
                 'bufferUtilization': round((oven1_cars + oven2_cars) / (oven1_capacity + oven2_capacity) * 100),
                 'ovenEfficiency': 94.2,
-                'totalVehicles': self.stats['total_cars'],'overflowPenalties' : buffer_stats,
+                'totalVehicles': self.stats['total_cars'],
+                'overflowPenalties': self.overflow,
             },
             'stats': {
                 'oven1_utilization': round(oven1_cars/oven1_capacity * 100, 1),
@@ -289,31 +333,23 @@ class BufferSystem:
                 'color_distribution': self.stats['by_color']
             }
         }
-    
-    def get_lane_status(self, lane):
-        filled = sum(1 for car in lane if car != 0)
-        capacity = len(lane)
-        utilization = filled / capacity
-        
-        if utilization >= 0.9:
-            return 'critical'
-        elif utilization >= 0.7:
-            return 'warning'
-        else:
-            return 'active'
+
 
 class SimulationManager:
+    """Manages simulation state and execution."""
+    
     def __init__(self):
         self.buffer_system = BufferSystem()
         self.is_running = False
         self.simulation_speed = 1.0  # seconds between operations
         
     async def run_simulation(self, websocket):
+        """Run the simulation loop."""
         self.is_running = True
         self.buffer_system.reset()
         
         # Generate initial batch of cars
-        colors = self.buffer_system.generate_cars_by_distribution(50)
+        colors = self.buffer_system.generate_cars_by_distribution(100)
         
         color_index = 0
         operation_count = 0
@@ -347,12 +383,16 @@ class SimulationManager:
         self.is_running = False
     
     def stop_simulation(self):
+        """Stop the running simulation."""
         self.is_running = False
+
 
 simulation_manager = SimulationManager()
 
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time communication."""
     await websocket.accept()
     try:
         while True:
@@ -380,8 +420,10 @@ async def websocket_endpoint(websocket: WebSocket):
         simulation_manager.stop_simulation()
         print("Client disconnected")
 
+
 @app.get("/")
 async def get():
+    """Root endpoint with info."""
     return HTMLResponse("""
     <html>
         <head>
@@ -395,9 +437,12 @@ async def get():
     </html>
     """)
 
+
 @app.get("/api/system-state")
 async def get_system_state():
+    """Get current system state via REST API."""
     return simulation_manager.buffer_system.get_system_state()
+
 
 if __name__ == "__main__":
     import uvicorn
