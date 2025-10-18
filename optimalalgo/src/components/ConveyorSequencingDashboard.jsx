@@ -386,10 +386,7 @@ const ConveyorSequencingDashboard = () => {
           <p className="text-blue-200 text-xs mb-1">Throughput</p>
           <p className="text-white text-2xl font-bold">{displayData.kpis.throughput}</p>
         </div>
-        <div className="bg-green-600 rounded-lg p-4">
-          <p className="text-green-200 text-xs mb-1">Efficiency</p>
-          <p className="text-white text-2xl font-bold">{displayData.kpis.ovenEfficiency}%</p>
-        </div>
+        
         <div className="bg-yellow-600 rounded-lg p-4">
           <p className="text-yellow-200 text-xs mb-1">Changeovers</p>
           <p className="text-white text-2xl font-bold">{displayData.kpis.colorChangeovers}</p>
